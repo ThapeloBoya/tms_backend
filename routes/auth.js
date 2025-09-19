@@ -5,29 +5,30 @@ const User = require("../models/User");
 
 const router = express.Router();
 
+// Generate JWTs
 const generateAccessToken = (user) =>
   jwt.sign(
     { id: user._id, username: user.username, role: user.role },
     process.env.JWT_SECRET,
-    { expiresIn: process.env.ACCESS_TOKEN_EXPIRY }
+    { expiresIn: process.env.ACCESS_TOKEN_EXPIRY || "15m" }
   );
 
 const generateRefreshToken = (user) =>
   jwt.sign(
     { id: user._id, username: user.username, role: user.role },
     process.env.JWT_REFRESH_SECRET,
-    { expiresIn: process.env.REFRESH_TOKEN_EXPIRY }
+    { expiresIn: process.env.REFRESH_TOKEN_EXPIRY || "7d" }
   );
 
-// ----------------- REGISTER -----------------
+// ------------------- REGISTER -------------------
 router.post("/register", async (req, res) => {
-  const { name, username, password } = req.body;
-
-  if (!name || !username || !password) {
-    return res.status(400).json({ message: "All fields are required." });
-  }
-
   try {
+    const { name, username, password } = req.body;
+
+    if (!name || !username || !password) {
+      return res.status(400).json({ message: "All fields are required." });
+    }
+
     const existingUser = await User.findOne({ username });
     if (existingUser) {
       return res.status(400).json({ message: "Username already exists." });
@@ -39,7 +40,7 @@ router.post("/register", async (req, res) => {
       name,
       username,
       passwordHash,
-      role: "customer", // default
+      role: "customer", // default role
     });
 
     await newUser.save();
@@ -50,10 +51,12 @@ router.post("/register", async (req, res) => {
   }
 });
 
-// ----------------- LOGIN -----------------
+// ------------------- LOGIN -------------------
 router.post("/login", async (req, res) => {
   try {
     const { username, password } = req.body;
+    console.log("Login attempt:", { username, passwordPresent: !!password });
+
     if (!username || !password) {
       return res.status(400).json({ message: "Username and password required." });
     }
@@ -72,16 +75,15 @@ router.post("/login", async (req, res) => {
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken(user);
 
-    // Save refresh token to DB
     user.refreshToken = refreshToken;
     await user.save();
 
-    // ✅ Set cookie so frontend can refresh session
+    // Send tokens
     res
       .cookie("refreshToken", refreshToken, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === "production", // true in production
-        sameSite: "None", // ✅ allows cross-site cookies
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "None", // IMPORTANT: allow cross-domain cookies
         maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
       })
       .json({
@@ -91,22 +93,23 @@ router.post("/login", async (req, res) => {
       });
   } catch (err) {
     console.error("Login error:", err);
-    res.status(500).json({ message: "Server error." });
+    res.status(500).json({ message: "Server error during login." });
   }
 });
 
-// ----------------- REFRESH TOKEN -----------------
+// ------------------- REFRESH TOKEN -------------------
 router.post("/refresh-token", async (req, res) => {
   try {
     const refreshToken = req.cookies.refreshToken;
+    console.log("Refresh token cookie:", !!refreshToken);
+
     if (!refreshToken) {
       return res.status(401).json({ message: "No refresh token provided." });
     }
 
-    // Verify refresh token
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-
     const user = await User.findById(decoded.id);
+
     if (!user || user.refreshToken !== refreshToken) {
       return res.status(403).json({ message: "Invalid refresh token." });
     }
@@ -123,12 +126,11 @@ router.post("/refresh-token", async (req, res) => {
   }
 });
 
-// ----------------- LOGOUT -----------------
+// ------------------- LOGOUT -------------------
 router.post("/logout", async (req, res) => {
   try {
     const refreshToken = req.cookies.refreshToken;
     if (refreshToken) {
-      // Delete refresh token from DB
       const user = await User.findOne({ refreshToken });
       if (user) {
         user.refreshToken = null;
@@ -136,17 +138,15 @@ router.post("/logout", async (req, res) => {
       }
     }
 
-    // ✅ Clear cookie
     res.clearCookie("refreshToken", {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
       sameSite: "None",
+      secure: process.env.NODE_ENV === "production",
     });
-
     res.json({ message: "Logged out successfully." });
   } catch (err) {
     console.error("Logout error:", err);
-    res.status(500).json({ message: "Server error." });
+    res.status(500).json({ message: "Server error during logout." });
   }
 });
 
